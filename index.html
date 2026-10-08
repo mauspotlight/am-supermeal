@@ -73,6 +73,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance}
 @media (max-width:370px){.topbar .brand .logo{display:none}}
 /* ¿quién come hoy? */
 [hidden]{display:none!important}
+/* sin zoom al tocar dos veces rápido (el pellizco para agrandar sigue funcionando) */
+html,body,button,a,input,select,textarea,label,summary,[role="button"],[data-g],.opt,.chart{touch-action:manipulation}
 .who{max-width:560px;margin:0 auto;padding:14px 16px 32px;min-height:100vh;display:flex;flex-direction:column;justify-content:center;gap:28px}
 .who-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .who h1{font-size:clamp(44px,13vw,64px);line-height:.92;font-stretch:72%;font-weight:900;letter-spacing:-.01em;text-transform:uppercase}
@@ -381,7 +383,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance}
 .reo .del{color:var(--p-red)}
 .rcp-list{display:grid;gap:10px}
 .rcp-row{display:grid;gap:6px;padding:10px;border-radius:14px;background:var(--surface-2);border:1px solid var(--line)}
-.rcp-row select{width:100%;min-width:0;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit;font-size:15px;padding:0 10px}
+.rcp-row select{width:100%;min-width:0;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit;font-size:16px;padding:0 10px}
 .rcp-q{display:grid;grid-template-columns:minmax(0,1fr) auto 40px;gap:8px;align-items:center}
 .rcp-q input{width:100%;min-width:0;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface);text-align:center;font-family:var(--display);font-weight:800;font-stretch:85%;font-size:20px;color:var(--ink)}
 .rcp-q span{font-size:13px;font-weight:700;color:var(--muted);min-width:44px}
@@ -1336,15 +1338,28 @@ function solveMeal(M,grp,fatTargetG){
 }
 
 /* Todo el día: metas que se redistribuyen, grasa que pasa a la siguiente comida y macros reales comidos */
+/* Si ya marcaste algo en una comida posterior, lo que no marcaste en esta se da por no comido y se reparte solo */
+const anySel=s=>!!s&&((s.fat||[]).length>0||!!s.drink||Object.keys(s).some(x=>x!=='fat'&&Array.isArray(s[x])&&s[x].length));
+function movedOn(mk){const i=MEALS.findIndex(x=>x.k===mk);return MEALS.slice(i+1).some(N=>anySel(state.sel[N.k]));}
 function computeDay(){
-  const D={};const pool={p:0,c:0},missedBy={p:[],c:[]};let carryG=0,fatFrom=[];
+  /* Presupuesto del día: cada comida recibe lo que queda de la meta diaria (lo ya comido + lo que reservan las comidas
+     anteriores aún pendientes), repartido según el peso de cada comida en el plan. La última comida recibe exactamente
+     lo que falta: nunca más de la meta. */
+  const D={},GL={p:GOAL.p,c:GOAL.c,g:GOAL.g},used={p:0,c:0,g:0},devBy={p:[],c:[],g:[]};
+  const bOf=G=>grams(G.sub)*F[macroOf(G)];
+  const baseOf=(M,X)=>X==='g'?(M.fatBase*5+1.5)*F.g:M.groups.filter(G=>macroOf(G)===X).reduce((a,G)=>a+bOf(G),0);
   MEALS.forEach((M,idx)=>{
-    const S=state.sel[M.k],grp={};
-        const bOf=G=>grams(G.sub)*F[macroOf(G)];
+    const S=state.sel[M.k],grp={},moved=movedOn(M.k),skipOf=gk=>!!S.skip[gk]||(moved&&!S[gk].length);
+    /* lo que queda del día; si ya te pasaste de calorías, se recortan carbos y grasa (la proteína se cuida) */
+    const L={p:Math.max(0,GL.p-used.p),c:Math.max(0,GL.c-used.c),g:Math.max(0,GL.g-used.g)};
+    const leftK=Math.max(0,GOAL.kcal-(used.p*4+used.c*4+used.g*9));let kcalCut=false;
+    if(L.p*4+L.c*4+L.g*9>leftK+1){kcalCut=true;if(L.p*4>=leftK){L.p=leftK/4;L.c=0;L.g=0;}else{const f=(leftK-L.p*4)/(L.c*4+L.g*9);L.c*=f;L.g*=f;}}
+    const allDev=MEALS.map(x=>x.label).filter(l=>devBy.p.includes(l)||devBy.c.includes(l)||devBy.g.includes(l));
+    const rest=MEALS.slice(idx),mealT=X=>{const tot=rest.reduce((a,N)=>a+baseOf(N,X),0);return tot>0?Math.max(0,L[X]*baseOf(M,X)/tot):0;};
+    const famTs={};
     ['p','c'].forEach(X=>{const gs=M.groups.filter(G=>macroOf(G)===X),famB=gs.reduce((a,G)=>a+bOf(G),0);
-      const extra=pool[X]/(MEALS.length-idx);pool[X]-=extra;
-      const famT=Math.max(famB*.2,famB+extra),famAdd=famT-famB;
-      const isOn=G=>S[G.k].length>0&&!S.skip[G.k],isSk=G=>!!S.skip[G.k];
+      const famT=mealT(X),famAdd=famT-famB;famTs[X]=famT;
+      const isOn=G=>S[G.k].length>0&&!S.skip[G.k],isSk=G=>skipOf(G.k);
       const act=gs.filter(isOn),actB=act.reduce((a,G)=>a+bOf(G),0),skB=gs.filter(isSk).reduce((a,G)=>a+bOf(G),0);
       const R=famT*(1-skB/famB);
       gs.forEach(G=>{const b=bOf(G),own=famT*b/famB;let target,hdr;
@@ -1352,37 +1367,37 @@ function computeDay(){
         else if(isOn(G)){target=R*b/actB;hdr=target;}
         else if(act.length){target=R*b/(actB+b);hdr=target;}
         else{target=own;hdr=R;}
-        const add=(isOn(G)||isSk(G)||!act.length)?famAdd*target/famT:0;
-        grp[G.k]={base:grams(G.sub),add,target,hdr,skipT:own,from:missedBy[X].slice()};});});
+        const add=(isOn(G)||isSk(G)||!act.length)?(famT>0?famAdd*target/famT:-b):0;
+        grp[G.k]={base:grams(G.sub),add,target,hdr,skipT:own,skipped:isSk(G),from:(kcalCut?allDev:devBy[X]).slice()};});});
     M.groups.filter(G=>macroOf(G)==='r').forEach(G=>{grp[G.k]={base:1,add:0,target:1,hdr:0,skipT:0,from:[]};});
-    const fatTargetG=(M.fatBase*5+1.5)*F.g+carryG;
+    const fatTargetG=mealT('g'),carryG=fatTargetG-baseOf(M,'g');
     const sol=solveMeal(M,grp,fatTargetG);
-    const yR=Math.round(sol.y*2)/2;
-    // cuánto faltó o sobró de lo indicado en cada grupo
+    // cuánto faltó o sobró de lo indicado en cada grupo (para los avisos)
     M.groups.forEach(G=>{const X=macroOf(G),mi=X==='p'?0:1,g=grp[G.k],p=sol.parts[G.k];g.factor=sol.mult[G.k];
       if(X==='r'){g.factor=1;g.f=null;g.miss=0;return;}
       const planned=p.on?(p.unit[mi]*sol.mult[G.k]+S[G.k].reduce((a,i)=>{const it=G.items[i];return S.eat[G.k][i]?a+itemMac(it,plannedParts(M,G,it,i,sol.mult[G.k]).map(x=>x[0]))[mi]:a;},0)):0;
       const eaten=p.on?(p.unit[mi]*sol.mult[G.k]+p.fixed[mi]):0;
-      if(S.skip[G.k]){g.f=0;g.miss=g.target;}
+      if(g.skipped){g.f=0;g.miss=g.target;}
       else if(!p.on){g.f=null;g.miss=0;}
-      else{g.miss=planned-eaten;g.f=planned>0?eaten/planned:1;}
-      pool[X]+=g.miss;});
-    ['p','c'].forEach(X=>{if(M.groups.some(G=>macroOf(G)===X&&Math.abs(grp[G.k].miss)>=1)&&!missedBy[X].includes(M.label))missedBy[X].push(M.label);});
+      else{g.miss=planned-eaten;g.f=planned>0?eaten/planned:1;}});
     // grasa
     const needG=Math.max(0,fatTargetG-sol.incidG),allP=sol.allF[2]>0?sol.allF[2]:5;
-    const skipped=S.fatSkip&&needG/5>0.05;
+    const skipped=(S.fatSkip||(moved&&!S.fat.length))&&needG/5>0.05;
     const plannedEach=S.fat.length?needG/allP/S.fat.length:0;
     const hasFE=S.fat.some(i=>(S.fatEat||{})[i]);
-    const fat={total:Math.round(needG/5*2)/2,y:sol.y,nFree:sol.nFree,plannedEach,tgt:fatTargetG,fixedG:sol.fixedF[2],own:Math.round(Math.max(0,(fatTargetG-carryG-sol.incidG)/5)*2)/2,carry:carryG/5,skipped,from:fatFrom.slice(),next:MEALS[idx+1]||null,incidG:sol.incidG,Fp:sol.Fp,
+    const fat={total:Math.round(needG/5*2)/2,y:sol.y,nFree:sol.nFree,plannedEach,tgt:fatTargetG,fixedG:sol.fixedF[2],own:Math.round(Math.max(0,(baseOf(M,'g')-sol.incidG)/5)*2)/2,carry:carryG/5,skipped,from:(kcalCut||!devBy.g.length?allDev:devBy.g).slice(),next:MEALS[idx+1]||null,incidG:sol.incidG,Fp:sol.Fp,
       eatF:hasFE&&!skipped?needG>0?sol.fatV[2]/needG:1:null,missG:hasFE&&!skipped?needG-sol.fatV[2]:0};
-    if(skipped){carryG=needG;fatFrom=fatFrom.concat(M.label);}
-    else if(hasFE&&Math.abs(needG-sol.fatV[2])>=1){carryG=needG-sol.fatV[2];fatFrom=[M.label];}
-    else{carryG=0;fatFrom=[];}
     // macros reales de lo marcado
     const real=sol.groupsVal.slice();
     if(M.drink&&S.drink)addV(real,[DRINK_MAC.p,DRINK_MAC.c,DRINK_MAC.g]);
     if(S.fat.length&&!skipped)addV(real,sol.fatV);
-    D[M.k]={grp,fat,sol,real:{p:real[0],c:real[1],g:real[2],kcal:kcalOf(real)}};
+    // lo que esta comida usa del día: lo comido, o lo que le toca si aún no la marcas
+    const pend=X=>{const gs=M.groups.filter(G=>macroOf(G)===X);return gs.length>0&&!gs.some(G=>(S[G.k].length&&!S.skip[G.k])||grp[G.k].skipped);};
+    const res={p:pend('p')?Math.max(real[0],famTs.p):real[0],c:pend('c')?Math.max(real[1],famTs.c):real[1],
+      g:(!S.fat.length&&!skipped)?Math.max(real[2],fatTargetG):real[2]};
+    const planT={p:famTs.p,c:famTs.c,g:fatTargetG};
+    ['p','c','g'].forEach(X=>{used[X]+=res[X];if(Math.abs(res[X]-planT[X])>=1&&!devBy[X].includes(M.label))devBy[X].push(M.label);});
+    D[M.k]={grp,fat,sol,kcalCut,cutFrom:allDev,real:{p:real[0],c:real[1],g:real[2],kcal:kcalOf(real)}};
   });
   return D;
 }
@@ -1420,7 +1435,7 @@ function fatAmountQ(M,key,i){const S=state.sel[M.k].fat,fi=fatInfo()[M.k],FE=sta
 /* ---------- progreso del día: cada alimento marcado suma lo que realmente aporta ---------- */
 function mealMacros(M,fi,PL){const D=(PL&&PL._D)||computeDay();return D[M.k].real;}
 function mealStatus(M,fi){const S=state.sel[M.k];
-  const parts=['p','c'].filter(X=>M.groups.some(G=>macroOf(G)===X)).map(X=>M.groups.some(G=>macroOf(G)===X&&(S[G.k].length>0||!!S.skip[G.k])));
+  const parts=['p','c'].filter(X=>M.groups.some(G=>macroOf(G)===X)).map(X=>M.groups.some(G=>macroOf(G)===X&&(S[G.k].length>0||!!S.skip[G.k]))||movedOn(M.k));
   if(M.drink)parts.push(S.drink);
   if(fi.total>0)parts.push(S.fat.length>0||fi.skipped);
   const done=parts.filter(Boolean).length;return {done,total:parts.length,complete:done===parts.length,any:done>0};}
@@ -1447,7 +1462,7 @@ function renderToday(info,PL){
   const left=GOAL.kcal-t.kcal;
   const mac=(lbl,v,goal,c)=>{const l=Math.round(goal-v);return `<div class="mac" style="--c:${c}"><div class="top"><span>${lbl}</span><span class="val">${nf(v)}<small>/${goal} g</small></span></div><div class="bar"><i style="width:${pct(v,goal)}%"></i></div><span class="mac-left">${l>=1?`Te faltan ${nf(l)} g`:l<=-1?`${nf(-l)} g de más`:'Meta cumplida'}</span></div>`;};
   document.getElementById('today-card').innerHTML=`
-    <div class="kc"><div><div class="eyebrow">Hoy llevas</div><b>${nf(t.kcal)}<small>/ ${nf(GOAL.kcal)} kcal</small></b></div><span class="left">${t.kcal===0?'Marca lo que vas comiendo':left>0?`Te faltan ${nf(left)} kcal`:'Meta del día cumplida'}</span></div>
+    <div class="kc"><div><div class="eyebrow">Hoy llevas</div><b>${nf(t.kcal)}<small>/ ${nf(GOAL.kcal)} kcal</small></b></div><span class="left">${t.kcal===0?'Marca lo que vas comiendo':left>0?`Te faltan ${nf(left)} kcal`:left<=-25?`Te pasaste ${nf(-left)} kcal`:'Meta del día cumplida'}</span></div>
     <div class="bar big" style="--c:var(--accent)"><i style="width:${pct(t.kcal,GOAL.kcal)}%"></i></div>
     <div class="macros">${mac('Proteína',t.p,GOAL.p,'var(--p-red)')}${mac('Carbos',t.c,GOAL.c,'var(--p-yellow)')}${mac('Grasa',t.g,GOAL.g,'var(--p-green)')}</div>
     ${waterHTML()}
@@ -1532,7 +1547,7 @@ let colState={};
 const firstGroup=mk=>{const M=MEALS.find(x=>x.k===mk);return M?viewGroups(M)[0].k:'prot';};
 const isCol=(mk,gk)=>{const k=mk+'|'+gk;return k in colState?colState[k]:true;};
 function toggleCol(mk,gk){colState[mk+'|'+gk]=!isCol(mk,gk);}
-function colSummary(rows,skipped,gk){const mk=state.meal;return `<button type="button" class="col-sum${!rows.length&&!skipped?' empty':''}" id="${mk}-${gk}-sum" data-collapse="${gk}" aria-label="Desplegar">${skipped?'<span class="muted">No comes esto ahora</span>':rows.length?rows.map(([n,a])=>`<span><b>${esc(n)}</b> · ${esc(a)}</span>`).join(''):`<span class="hint-open">${CHEV}${gk==='rec'?'Despliega para elegir una receta':'Despliega para seleccionar alimentos'}</span>`}</button>`;}
+function colSummary(rows,skipped,gk){const mk=state.meal;return `<button type="button" class="col-sum${!rows.length&&!skipped?' empty':''}" id="${mk}-${gk}-sum" data-collapse="${gk}" aria-label="Desplegar">${skipped?'<span class="muted">No marcaste nada: se reparte en las comidas que quedan</span>':rows.length?rows.map(([n,a])=>`<span><b>${esc(n)}</b> · ${esc(a)}</span>`).join(''):`<span class="hint-open">${CHEV}${gk==='rec'?'Despliega para elegir una receta':'Despliega para seleccionar alimentos'}</span>`}</button>`;}
 const seg=document.getElementById('seg'), main=document.getElementById('main');
 function renderSeg(info){info=info||fatInfo();seg.innerHTML=MEALS.map(M=>{const st=mealStatus(M,info[M.k]);
   return `<button type="button" id="meal-${M.k}" data-meal="${M.k}" aria-pressed="${M.k===state.meal}">${st.complete?'<span class="tick" aria-label="completa">✓</span>':''}${M.label}</button>`;}).join('');}
@@ -1555,15 +1570,17 @@ function render(){
     <div class="kpi"><span class="eyebrow">${dot('var(--p-yellow)')}Carbos</span><b>${r0(M.c*F.c+addC)}<small>g</small></b>${extraSm(addC,'c')}</div>
     <div class="kpi"><span class="eyebrow">${dot('var(--p-green)')}Grasa</span><b>${fr(Math.max(0,Math.round((M.gN*F.g+FI.carry)*2)/2))}<small>porc.</small></b>${FI.carry>=.25?`<span class="sm">+${fr(Math.round(FI.carry*2)/2||.5)} de ${esc(joinY(FI.from).toLowerCase())}</span>`:(M.gSm?`<span class="sm">${M.gSm}</span>`:'')}</div></div>`;
 
+  if(D[M.k].kcalCut){const z=M.groups.filter(G=>macroOf(G)!=='r').every(G=>MP[G.k].target<1)&&FI.tgt<1,fr_=esc(joinY(D[M.k].cutFrom).toLowerCase());
+    h+=`<p class="alert" style="margin-top:12px">${z?`Ya llegaste a tus ${nf(GOAL.kcal)} kcal del día${fr_?` con lo que comiste en ${fr_}`:''}. Si aún tienes hambre, come verduras libres (ver “Libres y notas”).`:`Como te pasaste${fr_?` en ${fr_}`:''}, aquí te tocan menos carbos y grasa para no pasar tus ${nf(GOAL.kcal)} kcal del día. La proteína se cuida primero.`}</p>`;}
   // lo que ya comiste en esta comida
   let pl='';
   if(M.drink&&S.drink) pl+=`<li>${dot('var(--accent)')}<div><div class="nm">Bebida de cacao</div><div class="am">Tu preparación fija</div></div></li>`;
   const plG=G=>{
-    if(S.skip[G.k]){pl+=`<li>${dot(COLOR[G.cls])}<div><div class="nm">Sin ${G.t.toLowerCase()} ahora</div><div class="am">${isLast?'Es la última comida: no se redistribuye':`~${big(String(r0(MP[G.k].skipT)))} g se reparten en las siguientes comidas`}</div></div></li>`;return;}
+    if(MP[G.k].skipped){pl+=`<li>${dot(COLOR[G.cls])}<div><div class="nm">Sin ${G.t.toLowerCase()}</div><div class="am">${isLast?'Es la última comida: no se redistribuye':`~${big(String(r0(MP[G.k].skipT)))} g se reparten en las siguientes comidas`}</div></div></li>`;return;}
     S[G.k].forEach(i=>{const it=G.items[i],a=eatenAmount(M,G,it,i,PL),edited=!!S.eat[G.k][i];
       pl+=`<li>${dot(COLOR[G.cls])}<div><div class="nm">${esc(it.n)}${edited?' <span class="muted" style="font-weight:600">· editado</span>':''}</div><div class="am">${big(a.raw)}${a.ck?` crudo · ${big(a.ck)} cocido`:''}</div></div></li>`;});};
   viewGroups(M).filter(G=>G.k!=='rec').forEach(plG);
-  if(FI.skipped) pl+=`<li>${dot(COLOR.fat)}<div><div class="nm">Sin grasa ahora</div><div class="am">${FI.next?`${big(porc(P))} pasan a ${esc(FI.next.label.toLowerCase())}`:'Es la última comida: estas porciones se pierden'}</div></div></li>`;
+  if(FI.skipped) pl+=`<li>${dot(COLOR.fat)}<div><div class="nm">Sin grasa</div><div class="am">${FI.next?`${big(porc(P))} se reparten en las siguientes comidas`:'Es la última comida: no se redistribuye'}</div></div></li>`;
   else if(P>0) S.fat.forEach(i=>{const key=M.fat[i];pl+=`<li>${dot(COLOR.fat)}<div><div class="nm">${esc(FAT[key].n)}</div><div class="am">${big(fatAmount(M,key,i))}</div></div></li>`;});
   viewGroups(M).filter(G=>G.k==='rec'&&G.items.some((it,i)=>!it.hidden||state.sel[M.k].rec.includes(i))).forEach(plG);
   h+=`<div class="card plate-card" aria-live="polite"><div class="kc" style="align-items:center"><span class="eyebrow">Ya comiste</span><span class="eyebrow" style="color:var(--ink)">${nf(mm.kcal)} kcal</span></div>${pl?`<ul class="pl">${pl}</ul>`:`<p class="muted" style="margin:10px 0 0;font-size:14px">Aún nada. Marca cada opción cuando te la comas y se suma a tu día.</p>`}${M.extra?`<p class="muted" style="margin:12px 0 0;font-size:13px">${M.extra}</p>`:''}</div>`;
@@ -1571,19 +1588,20 @@ function render(){
   if(M.drink) h+=`<div class="card drink"><div class="eyebrow">Tu bebida de cacao · fija</div><ul>${M.drink.items.map(([a,b])=>`<li>${a} <b>${b}</b></li>`).join('')}</ul><p>${M.drink.note}</p>
     <button type="button" class="opt drink-opt" role="checkbox" id="drink-check" aria-checked="${S.drink}" data-drink="1" style="--c:var(--accent);--cs:var(--accent-soft);margin-top:12px"><span><span class="nm">Ya me la tomé</span><span class="ht">Suma ~${nf(DRINK_MAC.p*4+DRINK_MAC.c*4+DRINK_MAC.g*9)} kcal</span></span><span class="check">${ICON.check}</span></button></div>`;
 
-  h+=`<p class="hint">${ICON.tap} Marca lo que te comes y se suma a tu día. Puedes combinar hasta 3 opciones por grupo y las cantidades se reparten solas. Con ⋯ eliges en qué comidas aparece cada alimento o lo quitas de esta comida.</p>`;
+  h+=`<p class="hint">${ICON.tap} Marca lo que te comes y se suma a tu día. Puedes combinar hasta 3 opciones por grupo y las cantidades se reparten solas. Lo que no marques se reparte solo en las comidas que quedan cuando pasas a la siguiente. Con ⋯ eliges en qué comidas aparece cada alimento o lo quitas de esta comida.</p>`;
 
   const renderG=G=>{
-    const g=MP[G.k],skipped=!!S.skip[G.k];
+    const g=MP[G.k],skipped=!!g.skipped;
     const sib=M.groups.filter(x=>x!==G&&macroOf(x)===macroOf(G)&&S[x.k].length&&!S.skip[x.k]);
     const nHid=G.items.filter((it,i)=>it.hidden&&!S[G.k].includes(i)).length,showH=!!state.showHid[M.k+'|'+G.k];
     const col=isCol(M.k,G.k);h+=`<section class="group g-${G.cls}${col?' is-col':''}"><div class="section-h"><button type="button" class="sec-tg" id="${M.k}-${G.k}-tg" data-collapse="${G.k}" aria-expanded="${!col}"><h3>${dot(COLOR[G.cls])}${G.t}</h3>${CHEV}</button><span class="sh-r"><button type="button" class="mini" id="${M.k}-${G.k}-reo" data-reorder="${G.k}">${state.reorder===G.k?'Listo':'Ordenar'}</button>${G.k==='rec'?'<span class="eyebrow">Por porción</span>':`<span class="eyebrow">~${r0(g.hdr)} g</span>`}</span></div>`;
-    if(col){h+=colSummary(S[G.k].map(i=>{const it=G.items[i];return it?[it.n,eatenAmount(M,G,it,i,PL).raw]:null;}).filter(Boolean),!!S.skip[G.k],G.k)+'</section>';return;}
+    if(col){h+=colSummary(S[G.k].map(i=>{const it=G.items[i];return it?[it.n,eatenAmount(M,G,it,i,PL).raw]:null;}).filter(Boolean),skipped,G.k)+'</section>';return;}
     const msgs=[];
     if(g.add>=1) msgs.push(`Incluye +${r0(g.add)} g que te faltaron en ${esc(joinY(g.from).toLowerCase())}.`);
     else if(g.add<=-1) msgs.push(`Baja ${r0(-g.add)} g porque comiste de más en ${esc(joinY(g.from).toLowerCase())}.`);
     const inc=G.k==='prot'?SOL.incidP:(macroOf(G)==='c'&&S[G.k].length?SOL.incidC*g.target/Math.max(1e-6,M.groups.filter(x=>macroOf(x)==='c'&&S[x.k].length&&!S.skip[x.k]).reduce((a,x)=>a+MP[x.k].target,0)):0);
     if(S[G.k].length&&inc>=2) msgs.push(`Ya se descontaron ~${r0(inc)} g de ${G.k==='prot'?'proteína':'carbohidratos'} que aportan tus otros alimentos.`);
+    if(g.hdr<1&&!S[G.k].length&&!skipped){msgs.length=0;msgs.push(D[M.k].kcalCut?'Ya llegaste a tus calorías del día: aquí ya no te toca más.':`Ya llegaste a tu meta de ${G.k==='prot'?'proteína':'carbohidratos'} del día: en esta comida no te toca más.`);}
     if(msgs.length) h+=`<p class="alert">${msgs.join(' ')}</p>`;
     if(state.reorder===G.k){h+=reorderHTML(M,G.k,G.items.map(x=>x.n),G.items.map(x=>x.n),i=>!(G.items[i].hidden&&!S[G.k].includes(i)))+'</section>';return;}
     h+=`<div class="list" role="group" aria-label="${G.t}">${G.items.every((it,i)=>it.hidden&&!S[G.k].includes(i))?'<p class="muted" style="margin:0;font-size:13.5px">No hay opciones visibles en esta comida. Toca “Mostrar ocultos” para volver a mostrar alguna.</p>':''}${sortIdx(G.items.map(x=>x.n),G.k).map(i=>{const it=G.items[i];const on=S[G.k].includes(i),hid=it.hidden&&!on;if(hid&&!showH)return '';const ed=on&&!!S.eat[G.k][i],a=on?eatenAmount(M,G,it,i,PL):hypoAmount(M,G,it,i,PL),addTxt=G.k==='rec'?(!on&&!hid?'<span class="ht add">1 porción · si la marcas, lo demás de la comida se ajusta</span>':''):!on&&!hid&&S[G.k].length&&S[G.k].length<3?'<span class="ht add">Si lo sumas, lo que ya marcaste se ajusta</span>':(!on&&!hid&&!S[G.k].length&&!skipped&&sib.length?`<span class="ht add">Si lo sumas, ${esc(sib.map(x=>x.t.toLowerCase()).join(' y '))} baja un poco</span>`:'');
@@ -1591,7 +1609,7 @@ function render(){
       return `<div class="opt-w"><button type="button" class="opt" role="checkbox" id="${M.k}-${G.k}-${i}" aria-checked="${on}" data-g="${G.k}" data-i="${i}"><span><span class="nm">${esc(it.n)}${ed?' <span class="tag">Editado</span>':''}</span>${it.h?`<span class="ht">${esc(it.h)}</span>`:''}${amtHTML(a)}${addTxt}${on?'<span class="tap-ed">Toca para ajustar cantidad o comidas</span>':''}</span><span class="check" data-toggle="1">${ICON.check}</span></button>${moreBtn(M.k,G.k,i,it.n)}</div>`;}).join('')}${nHid?`<button type="button" class="mini more-hid" id="${M.k}-${G.k}-showhid" data-showhid="${G.k}">${showH?'Esconder ocultos':`Mostrar ocultos (${nHid})`}</button>`:''}`;
     if(S[G.k].length) h+=eatBox(M,G,PL,isLast);
     if(G.k==='rec'){h+=`<p class="muted" style="margin:4px 2px 0;font-size:12.5px">Elige cuántas porciones comiste tocando la receta. Sus proteínas, carbos y grasa se descuentan de lo que te toca en esta comida.</p></div></section>`;return;}
-    h+=`<button type="button" class="opt skip" role="checkbox" id="${M.k}-${G.k}-skip" aria-checked="${skipped}" data-gskip="${G.k}"><span><span class="nm">No como esto ahora</span><span class="ht">${isLast?'Es la última comida: no se redistribuye':`Los ~${r0(g.skipT)} g se reparten en las comidas que quedan`}</span></span><span class="check">${ICON.check}</span></button></div></section>`;
+    h+=`</div></section>`;
   };
   viewGroups(M).filter(G=>G.k!=='rec').forEach(renderG);
 
@@ -1599,19 +1617,19 @@ function render(){
   const nHidF=M.fat.filter((k,i)=>M.fatHidden&&M.fatHidden.has(k)&&!S.fat.includes(i)).length,showHF=!!state.showHid[M.k+'|fat'];
   const fcol=isCol(M.k,'fat');h+=`<section class="group g-fat${fcol?' is-col':''}"><div class="section-h"><button type="button" class="sec-tg" id="${M.k}-fat-tg" data-collapse="fat" aria-expanded="${!fcol}"><h3>${dot(COLOR.fat)}Grasa</h3>${CHEV}</button><span class="sh-r"><button type="button" class="mini" id="${M.k}-fat-reo" data-reorder="fat">${state.reorder==='fat'?'Listo':'Ordenar'}</button><span class="eyebrow">${fatSub}</span></span></div>`;
   if(fcol)h+=colSummary(S.fat.map(i=>M.fat[i]?[FAT[M.fat[i]].n,fatAmount(M,M.fat[i],i)]:null).filter(Boolean),FI.skipped,'fat')+'</section>';
-  else if(P===0) h+=`<p class="alert">No agregues grasa: tu proteína ya la cubre.</p>`;
+  else if(P===0) h+=`<p class="alert">${FI.tgt<1?(D[M.k].kcalCut?'Ya llegaste a tus calorías del día: no agregues grasa.':'Ya llegaste a tu meta de grasa del día: no agregues más.'):'No agregues grasa: tus otros alimentos ya la cubren.'}</p>`;
   else{
     const msgs=[];
     if(FI.incidG>=2) msgs.push(`Ya se descontaron ~${r0(FI.incidG)} g de grasa que traen tus otros alimentos.`);
     if(FI.carry>=.25) msgs.push(`Suma +${porc(Math.round(FI.carry*2)/2||.5)} que no usaste en ${esc(joinY(FI.from).toLowerCase())}.`);
     else if(FI.carry<=-.25) msgs.push(`Baja ~${r0(-FI.carry*5)} g de grasa porque comiste más en ${esc(joinY(FI.from).toLowerCase())}.`);
-    if(FI.eatF!=null&&Math.abs(1-FI.eatF)>=.03) msgs.push(`Comiste ${Math.round(FI.eatF*100)} % de la grasa indicada. ${FI.next?`La diferencia (~${r0(Math.abs(FI.missG))} g) se ajusta en ${esc(FI.next.label.toLowerCase())}.`:'Es la última comida: no se redistribuye.'}`);
+    if(FI.eatF!=null&&Math.abs(1-FI.eatF)>=.03) msgs.push(`Comiste ${Math.round(FI.eatF*100)} % de la grasa indicada. ${FI.next?`La diferencia (~${r0(Math.abs(FI.missG))} g) se ajusta en las comidas que quedan.`:'Es la última comida: no se redistribuye.'}`);
     if(msgs.length) h+=`<p class="alert">${msgs.join(' ')}</p>`;
   }
   if(fcol){}else if(state.reorder==='fat')h+=reorderHTML(M,'fat',M.fat,M.fat.map(k=>FAT[k]?FAT[k].n:k),i=>!(M.fatHidden&&M.fatHidden.has(M.fat[i])&&!S.fat.includes(i)))+`</section>`;else
   h+=`<div class="list" role="group" aria-label="Grasa">${sortIdx(M.fat,'fat').map(i=>{const key=M.fat[i];const on=S.fat.includes(i),hid=M.fatHidden&&M.fatHidden.has(key)&&!on,F=FAT[key];if(hid&&!showHF)return '';
     if(hid)return `<button type="button" class="opt is-hid" id="${M.k}-fat-${i}" data-g="fat" data-i="${i}" data-hid="1"><span><span class="nm">${esc(F.n)} <span class="tag">Oculto aquí</span></span><span class="tap-ed">Toca para elegir en qué comidas aparece</span></span></button>`;
-    return `<div class="opt-w"><button type="button" class="opt" role="checkbox" id="${M.k}-fat-${i}" aria-checked="${on}" data-g="fat" data-i="${i}"><span><span class="nm">${esc(F.n)}${on&&(S.fatEat||{})[i]?' <span class="tag">Editado</span>':''}</span>${F.h?`<span class="ht">${esc(F.h)}</span>`:''}${P===0&&!(on&&(S.fatEat||{})[i])?'<span class="amt"><span class="none">Nada en esta comida</span></span>':(()=>{const fq=on?fatAmountQ(M,key,i):hypoFatQ(M,key,i);return `<span class="amt">${big(fq.txt)}</span>${macLine(fq.mac)}`;})()}${!on&&P>0&&S.fat.length&&S.fat.length<3?'<span class="ht add">Si la sumas, la grasa que ya marcaste se ajusta</span>':''}${on?'<span class="tap-ed">Toca para ajustar cantidad o comidas</span>':''}</span><span class="check" data-toggle="1">${ICON.check}</span></button>${moreBtn(M.k,'fat',i,F.n)}</div>`;}).join('')}${nHidF?`<button type="button" class="mini more-hid" id="${M.k}-fat-showhid" data-showhid="fat">${showHF?'Esconder ocultos':`Mostrar ocultos (${nHidF})`}</button>`:''}${P>0?`<button type="button" class="opt skip" role="checkbox" id="${M.k}-fat-skip" aria-checked="${FI.skipped}" data-skip="1"><span><span class="nm">No como grasa ahora</span><span class="ht">${FI.next?`Las ${porc(P)} pasan a ${esc(FI.next.label.toLowerCase())}`:'Es la última comida: estas porciones se pierden'}</span></span><span class="check">${ICON.check}</span></button>`:''}</div></section>`;
+    return `<div class="opt-w"><button type="button" class="opt" role="checkbox" id="${M.k}-fat-${i}" aria-checked="${on}" data-g="fat" data-i="${i}"><span><span class="nm">${esc(F.n)}${on&&(S.fatEat||{})[i]?' <span class="tag">Editado</span>':''}</span>${F.h?`<span class="ht">${esc(F.h)}</span>`:''}${P===0&&!(on&&(S.fatEat||{})[i])?'<span class="amt"><span class="none">Nada en esta comida</span></span>':(()=>{const fq=on?fatAmountQ(M,key,i):hypoFatQ(M,key,i);return `<span class="amt">${big(fq.txt)}</span>${macLine(fq.mac)}`;})()}${!on&&P>0&&S.fat.length&&S.fat.length<3?'<span class="ht add">Si la sumas, la grasa que ya marcaste se ajusta</span>':''}${on?'<span class="tap-ed">Toca para ajustar cantidad o comidas</span>':''}</span><span class="check" data-toggle="1">${ICON.check}</span></button>${moreBtn(M.k,'fat',i,F.n)}</div>`;}).join('')}${nHidF?`<button type="button" class="mini more-hid" id="${M.k}-fat-showhid" data-showhid="fat">${showHF?'Esconder ocultos':`Mostrar ocultos (${nHidF})`}</button>`:''}</div></section>`;
   viewGroups(M).filter(G=>G.k==='rec'&&G.items.some((it,i)=>!it.hidden||state.sel[M.k].rec.includes(i))).forEach(renderG);
   h+=tailHTML();
   main.innerHTML=h;
